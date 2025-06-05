@@ -1,0 +1,164 @@
+"""
+Configuration DSL (Domain Specific Language) definition for test orchestration.
+This module defines the data models for parsing and validating test configuration YAML files.
+"""
+
+from pathlib import Path
+
+import yaml
+from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field
+
+from octopus.dsl.dsl_service import DslService
+from octopus.dsl.dsl_test import DslTest
+
+
+class Variable(BaseModel):
+    """Input variable configuration.
+
+    Since the input format in YAML is key-value pairs like:
+    - service_name: service1
+    - $cntr_name: service_container
+
+    We need to handle this structure dynamically at runtime.
+    """
+
+    key: str = Field(description="Input variable name")
+    value: str = Field(description="Input variable value")
+
+
+class DslConfig(BaseModel):
+    """Top-level dsl configuration structure.
+
+    This model represents the root structure of the DSL configuration YAML file.
+    It includes version information, basic metadata, and collections of services and tests.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    version: str = Field(description="DSL version number")
+    name: str = Field(description="Configuration name")
+    desc: str = Field(description="Configuration description")
+    inputs: list[Variable] = Field(default_factory=list, description="List of input variables")
+    services: list[DslService] = Field(default_factory=list, description="List of service configurations")
+    tests: list[DslTest] = Field(default_factory=list, description="List of test case configurations")
+
+    @staticmethod
+    def _transform_inputs(inputs_data: list) -> list[dict]:
+        """Transform input data to Variable objects.
+
+        Args:
+            inputs_data: List of input data from YAML
+
+        Returns:
+            list[dict]: List of transformed input data
+        """
+        inputs = []
+        for item in inputs_data:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    inputs.append({"key": k, "value": str(v)})
+        return inputs
+
+    @staticmethod
+    def _transform_tests(tests_data: list) -> list[DslTest]:
+        """Transform test data to Test objects.
+
+        Args:
+            tests_data: List of test data from YAML
+
+        Returns:
+            list[Test]: List of Test instances
+
+        Raises:
+            ValueError: If test name is missing
+        """
+        tests = []
+        for test_data in tests_data:
+            if isinstance(test_data, dict):
+                if test_data.get("name", None) is None:
+                    raise ValueError("Test name is required")
+                tests.append(DslTest.from_dict(test_data))
+        return tests
+
+    @staticmethod
+    def _transform_services(services_data: list) -> list[DslService]:
+        """Transform service data to Service objects.
+
+        Args:
+            services_data: List of service data from YAML
+
+        Returns:
+            list[Service]: List of Service instances
+
+        Raises:
+            ValueError: If service name is missing
+        """
+        services = []
+        for service_data in services_data:
+            if isinstance(service_data, dict):
+                if service_data.get("name", None) is None:
+                    raise ValueError("Service name is required")
+                services.append(DslService.from_dict(service_data))
+        return services
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DslConfig":
+        """Create a configuration instance from a dictionary.
+
+        This method handles the conversion of raw data into a structured Config instance.
+        It performs necessary transformations on the input data before instantiation.
+
+        Args:
+            data: The configuration data as a dictionary
+
+        Returns:
+            DslConfig: An instance of the configuration model
+        """
+        # Transform inputs from key-value pairs to Input objects
+        if "inputs" in data:
+            data["inputs"] = cls._transform_inputs(data["inputs"])
+
+        # Transform tests from list to Test objects
+        if "tests" in data:
+            data["tests"] = cls._transform_tests(data["tests"])
+
+        # Transform services from list to Service objects
+        if "services" in data:
+            data["services"] = cls._transform_services(data["services"])
+
+        return cls(**data)
+
+    @classmethod
+    def from_yaml_file(cls, yaml_path: Path) -> "DslConfig":
+        """Create a configuration instance from a YAML file.
+
+        This method reads a YAML file and creates a configuration instance from its contents.
+
+        Args:
+            yaml_path: Path to the YAML configuration file
+
+        Returns:
+            DslConfig: An instance of the configuration model
+
+        Raises:
+            FileNotFoundError: If the YAML file does not exist
+            yaml.YAMLError: If the YAML file is invalid
+        """
+        if not yaml_path.exists():
+            raise FileNotFoundError(f"YAML file not found: {yaml_path}")
+
+        with open(yaml_path) as f:
+            try:
+                yaml_data = yaml.load(f, Loader=yaml.FullLoader)
+            except yaml.YAMLError:
+                logger.exception("Failed to load YAML file")
+                return None
+
+        return cls.from_dict(yaml_data)
+
+
+if __name__ == "__main__":
+    test_yaml_file = Path(__file__).parent / "test_data" / "config_sample_v0.1.0.yaml"
+    config = DslConfig.from_yaml_file(test_yaml_file)
+    print(config)
